@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MeCab Parse デモ</title>
+  <style>
+    :root { --bg:#0b1020; --fg:#e8ecf1; --muted:#9aa4b2; --accent:#6ea8fe; --card:#12182b; --chip:#1a2140; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic", "Meiryo", sans-serif; background: var(--bg); color: var(--fg); }
+    .container { max-width: 880px; margin: 0 auto; padding: 24px; }
+    header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom: 16px; }
+    header h1 { font-size: 20px; margin:0; letter-spacing:.3px; }
+    header .endpoint { font-size: 12px; color: var(--muted); word-break: break-all; }
+    .card { background: var(--card); border: 1px solid #212845; border-radius: 14px; padding: 16px; box-shadow: 0 6px 20px rgba(0,0,0,.25); }
+    .row { display:grid; grid-template-columns: 1fr auto; gap: 12px; }
+    textarea { width: 100%; min-height: 120px; resize: vertical; padding: 12px 14px; border-radius: 10px; border: 1px solid #273052; background: #0f1530; color: var(--fg); font-size: 15px; line-height: 1.6; }
+    textarea::placeholder { color: #6a7390; }
+    button { appearance:none; border:1px solid #2b3864; background: linear-gradient(180deg,#2b4bff33,#2b4bff11), #17224a; color: white; padding: 12px 18px; border-radius: 10px; font-weight: 600; cursor:pointer; transition: .18s transform, .18s opacity, .18s background;
+      min-width: 140px; height: 44px; }
+    button:hover { transform: translateY(-1px); }
+    button:disabled { opacity: .55; cursor: not-allowed; transform:none; }
+    .hint { font-size: 12px; color: var(--muted); margin-top: 8px; }
+    .section { margin-top: 18px; }
+    .section h2 { margin: 0 0 10px; font-size: 14px; color: #cdd7ff; letter-spacing:.2px; }
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+    .chip { background: var(--chip); border:1px solid #28325a; padding: 8px 10px; border-radius: 999px; font-size: 13px; }
+    .empty { color: var(--muted); font-size: 14px; }
+    .status { margin-top: 10px; font-size: 13px; color: var(--muted); }
+    .error { color: #ff9aa2; }
+    details { background:#0f1530; border:1px solid #28325a; border-radius: 10px; padding: 12px; }
+    summary { cursor:pointer; color:#b9c6ff; }
+    pre { margin: 10px 0 0; padding: 12px; overflow:auto; background:#0b1026; border:1px solid #1f2747; border-radius: 8px; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 12px; color:#d7e3ff; }
+    footer { margin-top: 28px; font-size: 12px; color: var(--muted); }
+    .row-stack { display:flex; gap:12px; flex-wrap: wrap; align-items:center; }
+    .small { font-size: 12px; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>MeCab Engine Parse デモ</h1>
+      <div class="endpoint">POST: https://ikeda042.homes/api/v1/mecab_engine/parse</div>
+    </header>
+
+    <div class="card">
+      <div class="row">
+        <textarea id="input" placeholder="ここに日本語テキストを入力してください（例：私の名前はAです）">私の名前はAです</textarea>
+        <div class="row-stack" style="flex-direction:column; align-items:stretch;">
+          <button id="submitBtn">解析する</button>
+          <button id="clearBtn" title="入力と結果をクリア">クリア</button>
+          <label class="small"><input type="checkbox" id="pretty" checked /> 整形表示</label>
+        </div>
+      </div>
+      <div class="hint">送信すると JSON で <code>{ "text": "..." }</code> をPOSTします。CORS対応済み（Access-Control-Allow-Origin: *）。</div>
+
+      <div class="section">
+        <h2>結果（トークン）</h2>
+        <div id="chips" class="chips"></div>
+        <div id="emptyMsg" class="empty" style="display:none;">トークンはありません。</div>
+        <div id="status" class="status"></div>
+      </div>
+
+      <div class="section">
+        <details id="rawBox">
+          <summary>生レスポンスを見る</summary>
+          <pre><code id="raw"></code></pre>
+        </details>
+      </div>
+    </div>
+
+    <footer>
+      このページはローカルでもそのまま動作します。問題があればブラウザのコンソールをご確認ください。
+    </footer>
+  </div>
+
+  <script>
+    const ENDPOINT = "https://ikeda042.homes/api/v1/mecab_engine/parse";
+    const $ = (sel) => document.querySelector(sel);
+    const input = $('#input');
+    const chips = $('#chips');
+    const emptyMsg = $('#emptyMsg');
+    const statusEl = $('#status');
+    const rawEl = $('#raw');
+    const submitBtn = $('#submitBtn');
+    const clearBtn = $('#clearBtn');
+    const prettyChk = $('#pretty');
+
+    function setLoading(loading) {
+      submitBtn.disabled = loading;
+      submitBtn.textContent = loading ? '送信中…' : '解析する';
+    }
+
+    function showStatus(text, isError=false) {
+      statusEl.textContent = text || '';
+      statusEl.classList.toggle('error', !!isError);
+    }
+
+    function renderTokens(tokens) {
+      chips.innerHTML = '';
+      if (!Array.isArray(tokens) || tokens.length === 0) {
+        emptyMsg.style.display = '';
+        return;
+      }
+      emptyMsg.style.display = 'none';
+      for (const t of tokens) {
+        const span = document.createElement('span');
+        span.className = 'chip';
+        span.textContent = String(t);
+        chips.appendChild(span);
+      }
+    }
+
+    function renderRaw(json) {
+      try {
+        rawEl.textContent = prettyChk.checked
+          ? JSON.stringify(json, null, 2)
+          : JSON.stringify(json);
+      } catch (e) {
+        rawEl.textContent = String(json);
+      }
+    }
+
+    async function parseText(text) {
+      // タイムアウト（10秒）
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10000);
+
+      const res = await fetch(ENDPOINT, {
+        method: 'POST',
+        headers: {
+          'accept': 'application/json',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ text }),
+        signal: controller.signal
+      }).catch((err) => { throw err; })
+        .finally(() => clearTimeout(timer));
+
+      if (!res.ok) {
+        const detail = await res.text().catch(()=>'');
+        throw new Error(`HTTP ${res.status} ${res.statusText}${detail ? ' - ' + detail : ''}`);
+      }
+      const data = await res.json();
+      return data;
+    }
+
+    async function onSubmit() {
+      const text = input.value.trim();
+      showStatus('');
+      renderTokens([]);
+      renderRaw({});
+      if (!text) {
+        showStatus('テキストを入力してください。', true);
+        return;
+      }
+      setLoading(true);
+      try {
+        const started = performance.now();
+        const data = await parseText(text);
+        const elapsed = (performance.now() - started).toFixed(0);
+        renderTokens(data.tokens);
+        renderRaw(data);
+        const count = Array.isArray(data.tokens) ? data.tokens.length : 0;
+        showStatus(`完了: ${count} トークン（${elapsed}ms）`);
+      } catch (err) {
+        console.error(err);
+        showStatus(`エラー: ${err.message || err}`, true);
+        renderTokens([]);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    function onClear() {
+      input.value = '';
+      renderTokens([]);
+      renderRaw({});
+      emptyMsg.style.display = 'none';
+      showStatus('');
+      input.focus();
+    }
+
+    submitBtn.addEventListener('click', onSubmit);
+    clearBtn.addEventListener('click', onClear);
+    input.addEventListener('keydown', (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'enter') {
+        onSubmit();
+      }
+    });
+    prettyChk.addEventListener('change', () => {
+      try {
+        const current = JSON.parse(rawEl.textContent || '{}');
+        renderRaw(current);
+      } catch {}
+    });
+
+    // 初回自動送信（デフォルト例文）
+    window.addEventListener('DOMContentLoaded', () => {
+      if (input.value.trim()) onSubmit();
+    });
+  </script>
+</body>
+</html>
